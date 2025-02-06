@@ -13,8 +13,8 @@ RUN npm ci
 # Copy project files
 COPY . .
 
-# Build the app
-RUN npm run build
+# Install dev dependencies and build the app
+RUN npm install && npm run build
 
 # Production stage
 FROM nginx:alpine
