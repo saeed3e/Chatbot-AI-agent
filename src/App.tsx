@@ -1,25 +1,49 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Settings, Save, X, Edit2, StopCircle, AlertCircle } from 'lucide-react';
+import { ChatMessage } from './components/ChatMessage';
 import { AIMessage, AVAILABLE_MODELS } from './types/ai';
 import { AIService } from './lib/ai-service';
+import { WelcomeModal } from './components/WelcomeModal';
+import { ApiStatus } from './components/ApiStatus';
+import { SettingsService } from './lib/settings-service';
+import { ChatDrawer } from './components/ChatDrawer';
+import { ChatService } from './lib/chat-service';
 
 function App() {
+  const settingsService = useRef(SettingsService.getInstance());
+  const chatService = useRef(ChatService.getInstance());
+  const aiServiceRef = useRef<AIService>();
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const [messages, setMessages] = useState<AIMessage[]>([]);
   const [input, setInput] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [selectedModel, setSelectedModel] = useState(AVAILABLE_MODELS[0].id);
+  const [apiKey, setApiKey] = useState(() => {
+    const settings = settingsService.current.getAllSettings();
+    return settings.apiKey || '';
+  });
+  const [selectedModel, setSelectedModel] = useState(() => {
+    const settings = settingsService.current.getAllSettings();
+    if (settings.modelName) {
+      return settings.modelName;
+    }
+    // Find first available model ID
+    return AVAILABLE_MODELS[0].models[0].id;
+  });
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
   const [editingContent, setEditingContent] = useState('');
   const [configError, setConfigError] = useState('');
-  
-  const aiServiceRef = useRef<AIService>();
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(true);
+  const [currentSessionId, setCurrentSessionId] = useState<string>('');
 
   const getCurrentModelName = () => {
-    const model = AVAILABLE_MODELS.find(m => m.id === selectedModel);
-    return model ? model.name : 'AI Model';
+    for (const category of AVAILABLE_MODELS) {
+      const model = category.models.find(m => m.id === selectedModel);
+      if (model) return model.name;
+    }
+    return 'AI Model';
   };
 
   const initializeAI = (key: string, model: string) => {
@@ -30,12 +54,33 @@ function App() {
     });
   };
 
+  useEffect(() => {
+    if (apiKey) {
+      initializeAI(apiKey, selectedModel);
+      setShowWelcome(false);
+    }
+
+    // Create initial session if none exists
+    const sessions = chatService.current.getSessions();
+    if (sessions.length === 0) {
+      const newSession = chatService.current.createSession();
+      setCurrentSessionId(newSession.id);
+    } else {
+      setCurrentSessionId(sessions[0].id);
+      setMessages(sessions[0].messages);
+    }
+  }, []);
+
   const handleSaveConfig = () => {
     setConfigError('');
     if (!apiKey.trim()) {
       setConfigError('Please enter your API key');
       return;
     }
+    settingsService.current.updateSettings({
+      apiKey: apiKey,
+      modelName: selectedModel
+    });
     initializeAI(apiKey, selectedModel);
     setIsConfigOpen(false);
   };
@@ -95,14 +140,31 @@ function App() {
 
     try {
       const response = await aiServiceRef.current!.sendMessage(messagesToSend, abortControllerRef.current.signal);
-      setMessages([...messagesToSend, { role: 'assistant', content: response }]);
+      const updatedMessages = [...messagesToSend, { role: 'assistant', content: response }];
+      setMessages(updatedMessages);
+
+      // Update session with new messages
+      if (currentSessionId) {
+        chatService.current.updateSession(currentSessionId, {
+          messages: updatedMessages,
+          title: chatService.current.generateTitle(updatedMessages)
+        });
+      }
     } catch (error) {
       if ((error as Error).name !== 'AbortError') {
         console.error('Error:', error);
-        setMessages([...messagesToSend, { 
+        const updatedMessages = [...messagesToSend, { 
           role: 'assistant', 
           content: 'Sorry, there was an error processing your request.' 
-        }]);
+        }];
+        setMessages(updatedMessages);
+        
+        // Update session with error message
+        if (currentSessionId) {
+          chatService.current.updateSession(currentSessionId, {
+            messages: updatedMessages
+          });
+        }
       }
     } finally {
       setIsLoading(false);
@@ -110,30 +172,90 @@ function App() {
     }
   };
 
+  const handleNewChat = () => {
+    const newSession = chatService.current.createSession();
+    setCurrentSessionId(newSession.id);
+    setMessages([]);
+  };
+
+  const handleSelectSession = (sessionId: string) => {
+    const session = chatService.current.getSession(sessionId);
+    if (session) {
+      setCurrentSessionId(sessionId);
+      setMessages(session.messages);
+    }
+  };
+
+  const handleDeleteSession = (sessionId: string) => {
+    chatService.current.deleteSession(sessionId);
+    const sessions = chatService.current.getSessions();
+    if (sessions.length === 0) {
+      handleNewChat();
+    } else {
+      handleSelectSession(sessions[0].id);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-100">
-      <div className="max-w-4xl mx-auto p-4">
-        <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-          {/* Header */}
-          <div className="bg-indigo-600 p-4">
-            <div className="flex justify-between items-center">
-              <div className="flex items-center space-x-2">
-                <Bot className="text-white" size={24} />
-                <h1 className="text-xl font-bold text-white">AI Chat</h1>
+      {showWelcome && (
+        <WelcomeModal
+          onComplete={(key) => {
+            // Save API key to settings
+            settingsService.current.updateSettings({
+              apiKey: key,
+              modelName: selectedModel
+            });
+            // Update state
+            setApiKey(key);
+            initializeAI(key, selectedModel);
+            setShowWelcome(false);
+          }}
+          onSkip={() => setShowWelcome(false)}
+        />
+      )}
+
+      {apiKey && <ApiStatus 
+        apiKey={apiKey}
+        onInvalidKey={() => {
+          settingsService.current.clearApiKey();
+          setIsConfigOpen(true);
+        }}
+      />}
+
+      <ChatDrawer
+        isOpen={isDrawerOpen}
+        onToggle={() => setIsDrawerOpen(!isDrawerOpen)}
+        sessions={chatService.current.getSessions()}
+        currentSessionId={currentSessionId}
+        onNewChat={handleNewChat}
+        onSelectSession={handleSelectSession}
+        onDeleteSession={handleDeleteSession}
+      />
+
+      <main className={`transition-all duration-300 ${isDrawerOpen ? 'ml-64' : 'ml-0'}`}>
+        <div className="max-w-4xl mx-auto p-4">
+          <div className="bg-white rounded-lg shadow-lg overflow-hidden min-h-[calc(100vh-2rem)]">
+            {/* Header */}
+            <div className="bg-indigo-600 p-4">
+              <div className="flex justify-between items-center">
+                <div className="flex items-center space-x-2">
+                  <Bot className="text-white" size={24} />
+                  <h1 className="text-xl font-bold text-white">AI Chat</h1>
+                </div>
+                <button
+                  onClick={() => setIsConfigOpen(!isConfigOpen)}
+                  className="text-white hover:bg-indigo-700 p-2 rounded-full"
+                >
+                  <Settings size={20} />
+                </button>
               </div>
-              <button
-                onClick={() => setIsConfigOpen(!isConfigOpen)}
-                className="text-white hover:bg-indigo-700 p-2 rounded-full"
-              >
-                <Settings size={20} />
-              </button>
+              {apiKey && (
+                <div className="mt-2 text-indigo-100 text-sm">
+                  Using model: {getCurrentModelName()}
+                </div>
+              )}
             </div>
-            {apiKey && (
-              <div className="mt-2 text-indigo-100 text-sm">
-                Using model: {getCurrentModelName()}
-              </div>
-            )}
-          </div>
 
           {/* Config Panel */}
           {isConfigOpen && (
@@ -161,21 +283,51 @@ function App() {
                   </div>
                 )}
               </div>
-              <div className="space-y-2">
+              <div className="space-y-4">
                 <label className="block text-sm font-medium text-gray-700">
-                  Model
+                  AI Model
                 </label>
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                >
-                  {AVAILABLE_MODELS.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name} - {model.description}
-                    </option>
-                  ))}
-                </select>
+                {AVAILABLE_MODELS.map((category) => (
+                  <div key={category.name} className="space-y-2">
+                    <h3 className="text-sm font-semibold text-gray-900 bg-gray-100 p-2 rounded">
+                      {category.name}
+                    </h3>
+                    <div className="space-y-2">
+                      {category.models.map((model) => (
+                        <div
+                          key={model.id}
+                          className={`relative flex items-start p-3 border rounded-lg hover:bg-gray-50 transition-colors cursor-pointer ${
+                            selectedModel === model.id ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200'
+                          }`}
+                          onClick={() => {
+                            setSelectedModel(model.id);
+                            initializeAI(apiKey, model.id);
+                            settingsService.current.updateSettings({
+                              apiKey,
+                              modelName: model.id
+                            });
+                          }}
+                        >
+                          <div className="flex items-center h-5">
+                            <input
+                              type="radio"
+                              name="model"
+                              checked={selectedModel === model.id}
+                              onChange={() => {}}
+                              className="h-4 w-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+                            />
+                          </div>
+                          <div className="ml-3 flex-1">
+                            <label className="font-medium text-gray-900">
+                              {model.name}
+                            </label>
+                            <p className="text-gray-500 text-sm mt-1">{model.description}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
               <div className="flex justify-end space-x-2">
                 <button
@@ -199,26 +351,25 @@ function App() {
             </div>
           )}
 
-          {/* Messages */}
-          <div className="h-[500px] overflow-y-auto p-4 space-y-4">
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4" style={{ height: 'calc(100vh - 13rem)' }}>
             {messages.map((message, index) => (
               <div
                 key={index}
-                className={`flex items-start space-x-2 ${
-                  message.role === 'assistant' ? 'justify-start' : 'justify-end'
-                }`}
+                className={`flex items-start gap-3 ${message.role === 'assistant' ? 'justify-start' : 'justify-end'}`}
               >
                 {message.role === 'assistant' && (
                   <Bot className="text-indigo-600" size={20} />
                 )}
-                <div className="flex-1 max-w-[80%]">
+                <div className={`flex-1 max-w-[80%] ${message.role === 'user' ? 'order-first' : ''}`}>
                   {editingMessageIndex === index ? (
                     <div className="space-y-2">
                       <textarea
                         value={editingContent}
                         onChange={(e) => setEditingContent(e.target.value)}
-                        className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500"
+                        className="w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 resize-none"
                         rows={3}
+                        autoFocus
                       />
                       <div className="flex justify-end space-x-2">
                         <button
@@ -236,23 +387,10 @@ function App() {
                       </div>
                     </div>
                   ) : (
-                    <div
-                      className={`p-3 rounded-lg group relative ${
-                        message.role === 'assistant'
-                          ? 'bg-gray-100'
-                          : 'bg-indigo-600 text-white'
-                      }`}
-                    >
-                      {message.content}
-                      {message.role === 'user' && (
-                        <button
-                          onClick={() => handleEditMessage(index)}
-                          className="absolute -left-8 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity"
-                        >
-                          <Edit2 size={16} className="text-gray-500 hover:text-gray-700" />
-                        </button>
-                      )}
-                    </div>
+                    <ChatMessage
+                      content={message.content}
+                      isUser={message.role === 'user'}
+                    />
                   )}
                 </div>
                 {message.role === 'user' && (
@@ -277,28 +415,37 @@ function App() {
             )}
           </div>
 
-          {/* Input */}
-          <form onSubmit={handleSubmit} className="p-4 border-t">
+            {/* Input */}
+            <form onSubmit={handleSubmit} className="p-4 border-t bg-white sticky bottom-0">
             <div className="flex space-x-2">
-              <input
-                type="text"
+              <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                placeholder="Type your message..."
-                className="flex-1 p-2 border rounded"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmit(null);
+                  }
+                }}
+                placeholder="Type your message... (Press Enter to send, Shift+Enter for new line)"
+                className="flex-1 p-3 border rounded-xl resize-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                 disabled={!apiKey || isLoading}
+                rows={1}
+                style={{ minHeight: '2.5rem', maxHeight: '150px' }}
               />
               <button
                 type="submit"
                 disabled={!apiKey || !input.trim() || isLoading}
-                className="bg-indigo-600 text-white p-2 rounded hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="bg-indigo-600 text-white p-3 rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                title={!apiKey ? 'Please enter your API key in settings' : 'Send message'}
               >
                 <Send size={20} />
               </button>
             </div>
           </form>
+          </div>
         </div>
-      </div>
+      </main>
     </div>
   );
 }
