@@ -119,7 +119,10 @@ export class OpenAIProvider implements AIProvider {
 
         const data = await response.json();
 
-        if (!data.choices?.[0]?.message?.content) {
+        // Handle both streaming and non-streaming response formats
+        const content = data.choices?.[0]?.message?.content || data.choices?.[0]?.delta?.content;
+        if (!content) {
+          console.error('Invalid API response:', data);
           throw new ApiError(
             'Invalid response format from API',
             undefined,
@@ -127,7 +130,7 @@ export class OpenAIProvider implements AIProvider {
           );
         }
 
-        return data.choices[0].message.content;
+        return content;
       } catch (error) {
         if (error instanceof ApiError) {
           throw error;

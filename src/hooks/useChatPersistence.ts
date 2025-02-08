@@ -87,12 +87,17 @@ export const useChatPersistence = ({
       if (key?.startsWith('chat_')) {
         try {
           const chatData = JSON.parse(localStorage.getItem(key) || '');
+          // Validate chat data structure
+          if (!chatData || !Array.isArray(chatData.messages)) {
+            console.warn('Invalid chat data structure for:', key);
+            continue;
+          }
           const chatId = key.replace('chat_', '');
-          const lastMessage = chatData.messages[chatData.messages.length - 1];
+          const lastMessage = chatData.messages.length > 0 ? chatData.messages[chatData.messages.length - 1] : null;
           chats.push({
             id: chatId,
-            timestamp: chatData.timestamp,
-            preview: lastMessage?.content.slice(0, 100) || ''
+            timestamp: chatData.timestamp || Date.now(),
+            preview: lastMessage?.content?.slice(0, 100) || 'Empty chat'
           });
         } catch (e) {
           console.error('Error parsing chat data:', e);
