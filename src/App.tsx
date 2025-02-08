@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Settings, Save, X, Edit2, StopCircle, AlertCircle } from 'lucide-react';
+import { OnlineStatus } from './components/OnlineStatus';
 import { ChatMessage } from './components/ChatMessage';
 import { AIMessage, AVAILABLE_MODELS } from './types/ai';
 import { AIService } from './lib/ai-service';
@@ -8,6 +9,8 @@ import { ApiStatus } from './components/ApiStatus';
 import { SettingsService } from './lib/settings-service';
 import { ChatDrawer } from './components/ChatDrawer';
 import { ChatService } from './lib/chat-service';
+import { ChatHistory } from './components/ChatHistory';
+import { useChatPersistence } from './hooks/useChatPersistence';
 
 function App() {
   const settingsService = useRef(SettingsService.getInstance());
@@ -15,8 +18,21 @@ function App() {
   const aiServiceRef = useRef<AIService>();
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Chat and Message States
   const [messages, setMessages] = useState<AIMessage[]>([]);
   const [input, setInput] = useState('');
+  const [currentSessionId, setCurrentSessionId] = useState<string>('');
+  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
+  const [editingContent, setEditingContent] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
+  // UI States
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(true);
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [configError, setConfigError] = useState('');
+
+  // Settings States
   const [apiKey, setApiKey] = useState(() => {
     const settings = settingsService.current.getAllSettings();
     return settings.apiKey || '';
@@ -26,17 +42,16 @@ function App() {
     if (settings.modelName) {
       return settings.modelName;
     }
-    // Find first available model ID
     return AVAILABLE_MODELS[0].models[0].id;
   });
-  const [isConfigOpen, setIsConfigOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
-  const [editingContent, setEditingContent] = useState('');
-  const [configError, setConfigError] = useState('');
-  const [showWelcome, setShowWelcome] = useState(true);
-  const [isDrawerOpen, setIsDrawerOpen] = useState(true);
-  const [currentSessionId, setCurrentSessionId] = useState<string>('');
+
+  // Initialize chat persistence hook
+  const { loadChat, getAllChats } = useChatPersistence({
+    messages,
+    setMessages,
+    currentSessionId,
+    setCurrentSessionId
+  });
 
   const getCurrentModelName = () => {
     for (const category of AVAILABLE_MODELS) {
@@ -70,6 +85,18 @@ function App() {
       setMessages(sessions[0].messages);
     }
   }, []);
+
+  const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setApiKey(e.target.value);
+    setConfigError('');
+  };
+
+  const handleApiKeyKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && apiKey.trim()) {
+      handleSaveConfig();
+      setIsConfigOpen(false);
+    }
+  };
 
   const handleSaveConfig = () => {
     setConfigError('');
@@ -122,7 +149,26 @@ function App() {
 
   const handleSubmit = async (e: React.FormEvent | null, customMessages?: AIMessage[]) => {
     if (e) e.preventDefault();
-    if ((!input.trim() && !customMessages) || !apiKey) return;
+    
+    if (!apiKey) {
+      setInput('');
+      setConfigError('Please enter your API key to start chatting');
+      setIsConfigOpen(true);
+      return;
+    }
+
+    if ((!input.trim() && !customMessages)) return;
+
+    if (!apiKey) {
+      setInput('Please enter your API key in settings first');
+      setIsConfigOpen(true);
+      return;
+    }
+
+    if (!navigator.onLine) {
+      setMessages(prev => [...prev, { role: 'assistant', content: 'You are currently offline. Please check your internet connection and try again.' }]);
+      return;
+    }
 
     if (!aiServiceRef.current) {
       initializeAI(apiKey, selectedModel);
@@ -139,9 +185,33 @@ function App() {
     abortControllerRef.current = new AbortController();
 
     try {
-      const response = await aiServiceRef.current!.sendMessage(messagesToSend, abortControllerRef.current.signal);
-      const updatedMessages = [...messagesToSend, { role: 'assistant', content: response }];
-      setMessages(updatedMessages);
+      let streamedResponse = '';
+      const response = await aiServiceRef.current!.sendMessage(
+        messagesToSend,
+        abortControllerRef.current.signal,
+        (chunk) => {
+          streamedResponse += chunk;
+          setMessages(prev => {
+            const newMessages = [...prev];
+            if (newMessages[newMessages.length - 1]?.role === 'assistant') {
+              newMessages[newMessages.length - 1] = {
+                role: 'assistant',
+                content: streamedResponse
+              };
+            } else {
+              newMessages.push({ role: 'assistant', content: streamedResponse });
+            }
+            return newMessages;
+          });
+        }
+      );
+      // Don't overwrite the streamed response
+      if (currentSessionId) {
+        chatService.current.updateSession(currentSessionId, {
+          messages: messages,
+          title: chatService.current.generateTitle(messages)
+        });
+      }
 
       // Update session with new messages
       if (currentSessionId) {
@@ -231,11 +301,19 @@ function App() {
         onNewChat={handleNewChat}
         onSelectSession={handleSelectSession}
         onDeleteSession={handleDeleteSession}
-      />
+      >
+        <ChatHistory
+          chats={getAllChats()}
+          onLoadChat={loadChat}
+          currentSessionId={currentSessionId}
+        />
+      </ChatDrawer>
+
 
       <main className={`transition-all duration-300 ${isDrawerOpen ? 'ml-64' : 'ml-0'}`}>
         <div className="max-w-4xl mx-auto p-4">
           <div className="bg-white rounded-lg shadow-lg overflow-hidden min-h-[calc(100vh-2rem)]">
+            <OnlineStatus />
             {/* Header */}
             <div className="bg-indigo-600 p-4">
               <div className="flex justify-between items-center">
@@ -267,10 +345,8 @@ function App() {
                 <input
                   type="password"
                   value={apiKey}
-                  onChange={(e) => {
-                    setApiKey(e.target.value);
-                    setConfigError('');
-                  }}
+                  onChange={handleApiKeyChange}
+                  onKeyPress={handleApiKeyKeyPress}
                   placeholder="Enter your OpenRouter API key"
                   className={`w-full p-2 border rounded focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${
                     configError ? 'border-red-500' : ''

@@ -17,6 +17,7 @@ interface ChatDrawerProps {
   onNewChat: () => void;
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
+  children?: React.ReactNode;
 }
 
 export const ChatDrawer: React.FC<ChatDrawerProps> = ({
@@ -27,9 +28,10 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   onNewChat,
   onSelectSession,
   onDeleteSession,
+  children
 }) => {
   return (
-    <>
+    <div className="relative">
       {/* Drawer */}
       <div
         className={`fixed left-0 top-0 h-full bg-gray-900 text-white transition-all duration-300 ease-in-out ${
@@ -49,31 +51,41 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
 
         {/* Chat History */}
         <div className="px-2 space-y-2 overflow-y-auto" style={{ height: 'calc(100vh - 80px)' }}>
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={`group flex items-center gap-2 p-2 rounded-lg cursor-pointer hover:bg-gray-800 ${
-                session.id === currentSessionId ? 'bg-gray-800' : ''
-              }`}
-              onClick={() => onSelectSession(session.id)}
-            >
-              <MessageSquare size={18} className="shrink-0" />
-              <span className="flex-1 truncate text-sm">
-                {session.title || 'New Chat'}
-              </span>
-              {session.id === currentSessionId && (
+          {/* Recent Sessions */}
+          <div className="mb-4">
+            <h3 className="text-sm font-semibold text-gray-400 mb-2 px-2">Recent Sessions</h3>
+            {sessions.map((session) => (
+              <div
+                key={session.id}
+                className={`group flex items-center justify-between p-2 rounded-lg cursor-pointer ${
+                  session.id === currentSessionId
+                    ? 'bg-gray-700'
+                    : 'hover:bg-gray-800'
+                }`}
+                onClick={() => onSelectSession(session.id)}
+              >
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <MessageSquare size={18} />
+                  <span className="truncate">{session.title || 'New Chat'}</span>
+                </div>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
                     onDeleteSession(session.id);
                   }}
-                  className="opacity-0 group-hover:opacity-100 hover:text-red-400 transition-opacity"
+                  className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-600 rounded-full transition-opacity"
                 >
-                  <Trash2 size={16} />
+                  <Trash2 size={14} />
                 </button>
-              )}
-            </div>
-          ))}
+              </div>
+            ))}
+          </div>
+
+          {/* Persistent Chat History */}
+          <div>
+            <h3 className="text-sm font-semibold text-gray-400 mb-2 px-2">Chat History</h3>
+            {children}
+          </div>
         </div>
       </div>
 
@@ -86,6 +98,6 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
       >
         {isOpen ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
       </button>
-    </>
+    </div>
   );
 };
